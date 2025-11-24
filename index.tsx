@@ -120,50 +120,53 @@ const analyzeMarket = async (symbol: string, candles: Candle[], balance: number,
   ).join('\n');
 
   const prompt = `
-    Role: Elite Pure Price Action Binary Options Trader (No Indicators, No Volume).
-    Objective: Grow account ($${balance}) to $10,000 using aggressive compounding on high-probability setups.
+    Role: Elite Price Action Binary Options Trader (Strict Confidence-Based Money Management).
+    Objective: Grow account ($${balance}) by identifying high-probability setups and managing risk dynamically.
     Context: Trading ${symbol} on ${timeframeMinutes}-minute timeframe.
     
     MARKET DATA (Last 20 Candles - OHLC Only):
     ${ohlcString}
     
-    ANALYSIS METHODOLOGY (CANDLESTICK GEOMETRY ONLY):
-    1. MARKET STRUCTURE: Identify Higher Highs/Higher Lows (Uptrend) or Lower Highs/Lower Lows (Downtrend).
-    2. CANDLE PSYCHOLOGY: 
-       - Long Wicks = Rejection (Price tried to go there but failed).
-       - Large Body = Strong Momentum.
-       - Small Body (Doji) = Indecision/Potential Reversal.
-    3. PATTERNS: Engulfing, Pinbar, Inside Bar, Morning/Evening Star, Railway Tracks.
-    4. KEY LEVELS: Identify support/resistance based on previous wicks/bodies.
+    ANALYSIS METHODOLOGY (CANDLESTICK GEOMETRY):
+    1. MARKET STRUCTURE: Determine trend (HH/HL or LH/LL). Trend is your friend.
+    2. REJECTIONS: Look for long wicks indicating price rejection at key levels.
+    3. MOMENTUM: Large bodies indicate strength. Small bodies indicate weakness/indecision.
+    4. PATTERNS: Engulfing, Pinbar, Inside Bar, Morning/Evening Star.
 
     STRATEGY (BINARY OPTIONS):
-    - TREND CONTINUATION: If strong trend + minor pullback + rejection of pullback -> TRADE WITH TREND.
-    - REVERSAL: If price hits key level + prints reversal candle (Pinbar/Engulfing) -> TRADE REVERSAL.
+    - CALL (UP): Trend Up + Pullback to Support + Rejection Wick (Bullish Pinbar) or Engulfing.
+    - PUT (DOWN): Trend Down + Pullback to Resistance + Rejection Wick (Bearish Pinbar) or Engulfing.
+    - HOLD: Choppy market, Doji candles, no clear trend, or low confidence.
     
-    MONEY MANAGEMENT (Growth Plan 10 -> 10k):
-    - Account < $100: Risk 10-15% per trade (Aggressive Growth).
-    - Account > $100: Risk 5-8% per trade.
-    - Account > $1000: Risk 2-4% per trade.
+    MONEY MANAGEMENT (CONFIDENCE-BASED DYNAMIC STAKING):
+    Calculate "stake" based on your confidence level (0-100%).
+    * CRITICAL: Do not trade if confidence is < 70%. *
+    
+    - CONFIDENCE 90-100% (SNIPER ENTRY): Risk 10-15% of Balance ($${balance}). Setup is perfect (Trend + Level + Signal).
+    - CONFIDENCE 80-89% (STRONG SETUP): Risk 5-9% of Balance. Good setup but maybe one factor is average.
+    - CONFIDENCE 75-79% (STANDARD SETUP): Risk 2-3% of Balance. Decent setup but slightly risky.
+    - CONFIDENCE < 75%: Action MUST be "HOLD". Stake = 0.
     
     TASK:
     Analyze the *latest* closed candle in the context of the previous 19.
-    Explain the psychology of buyers vs sellers.
+    Determine the action (CALL, PUT, HOLD).
+    Calculate stake based on the Confidence matrix above.
     
     Output JSON ONLY:
     {
       "action": "CALL" | "PUT" | "HOLD",
-      "duration": integer (1, 2, or 3). THIS IS THE NUMBER OF CANDLES to hold. (e.g. 1 = 1 candle expiry. If timeframe is 5m, duration 1 = 5m expiry).
-      "stake": number (calculated based on Plan),
+      "duration": integer (1, 2, 3 or 4). Number of candles to hold.
+      "stake": number (Exact dollar amount based on % of $${balance}),
       "confidence": integer (0-100),
       "reasoning": "Short Strategy Name (e.g., 'Bullish Pinbar Rejection')",
-      "technical_analysis": "Detailed 'Stream of Consciousness' log: 'Latest candle closed as a Hammer at support. Wicks indicate sellers exhausted. Previous 3 candles show deceleration. Expecting push up.'"
+      "technical_analysis": "Detailed analysis. Explain WHY confidence is High/Low. E.g. 'Strong rejection wick at EMA confirms uptrend. Confidence 92% justifies aggressive stake.'"
     }
   `;
 
   try {
-    // Add Timeout to prevent hanging
+    // Increased Timeout to 60s to prevent premature failures
     const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("AI Timeout")), 15000)
+        setTimeout(() => reject(new Error("AI Timeout")), 60000)
     );
 
     const apiPromise = ai.models.generateContent({
@@ -220,7 +223,6 @@ const App = () => {
   const balanceRef = useRef(balance);
   const currencyRef = useRef(currency);
   const timeframeRef = useRef(timeframe);
-  const logEndRef = useRef<HTMLDivElement>(null);
   
   // DATA REF: The Source of Truth for the WebSocket (avoids closure staleness)
   const marketDataRef = useRef<Record<string, SymbolData>>({});
@@ -234,16 +236,9 @@ const App = () => {
     const id = Math.random().toString(36).substring(7);
     const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
     
-    // NEW LOGIC: Append to bottom (Terminal Style)
-    setLogs(prev => [...prev, { id, timestamp: time, type, message }].slice(-150));
+    // NEW LOGIC: Prepend to Top (Feed Style)
+    setLogs(prev => [{ id, timestamp: time, type, message }, ...prev].slice(0, 150));
   }, []);
-
-  // Auto-scroll logs
-  useEffect(() => {
-    if (logEndRef.current) {
-        logEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [logs]);
 
   // Sync refs
   useEffect(() => { activeSymbolsRef.current = activeSymbols; }, [activeSymbols]);
@@ -316,21 +311,30 @@ const App = () => {
       if (decision.action === 'HOLD') return;
 
       const rawStake = parseFloat(decision.stake.toFixed(2));
-      const safeStake = Math.max(0.35, rawStake); 
       
+      // SAFETY: Hard cap at 20% of balance to prevent AI hallucinations from wiping account
+      const currentBalance = balanceRef.current;
+      const maxAllowedStake = currentBalance * 0.20;
+      
+      let safeStake = Math.max(0.35, rawStake); 
+      if (safeStake > maxAllowedStake) {
+          safeStake = maxAllowedStake;
+          addLog('warning', `⚠️ Stake capped at safety limit ($${safeStake.toFixed(2)})`);
+      }
+
       const currentTfSeconds = timeframeRef.current;
       const currentTfMinutes = currentTfSeconds / 60;
       
       const candles = decision.duration; 
       const actualDurationMinutes = Math.round(candles * currentTfMinutes);
 
-      addLog('ai', `🤖 EXECUTING: ${decision.action} on ${decision.symbol}. Stake: $${safeStake}. Duration: ${actualDurationMinutes}m (${candles} candles)`);
+      addLog('ai', `🤖 EXECUTING: ${decision.action} on ${decision.symbol}. Stake: $${safeStake} (Conf: ${decision.confidence}%). Duration: ${actualDurationMinutes}m`);
 
       sendRequest({
           buy: 1,
           price: safeStake + 100, 
           parameters: {
-              contract_type: decision.action === 'CALL' ? 'CALL' : 'PUT',
+              contract_type: decision.action,
               symbol: decision.symbol,
               duration: actualDurationMinutes, 
               duration_unit: 'm', 
@@ -373,10 +377,11 @@ const App = () => {
         const tfMinutes = timeframeRef.current / 60;
         const decision = await analyzeMarket(symbol, candles, balanceRef.current, tfMinutes);
 
-        addLog('debug', `[${symbol}] 📝 Analysis: ${decision.reasoning}`); 
+        // Improved Visibility for reasoning
+        addLog('ai', `[${symbol}] 📝 Analysis: ${decision.reasoning}`); 
         
         if (decision.action !== 'HOLD') {
-            addLog('success', `>>> 🚀 SIGNAL: ${decision.action} (${decision.confidence}%)`);
+            addLog('success', `>>> 🚀 SIGNAL: ${decision.action} (${decision.confidence}%) - Stake: $${decision.stake}`);
             if (isTradingActiveRef.current) {
                 placeTrade(decision);
             }
@@ -396,11 +401,11 @@ const App = () => {
             [symbol]: { ...prev[symbol], isAnalyzing: false }
         }));
 
-        // Delay next processing to respect Rate Limit
+        // Reduced delay to process queue faster (500ms instead of 1500ms)
         setTimeout(() => {
             isProcessingQueue.current = false;
             processQueue(); 
-        }, 1500); 
+        }, 500); 
     }
   };
 
@@ -970,10 +975,10 @@ const App = () => {
                   </div>
               </div>
 
-              {/* System Logs - NEWEST AT BOTTOM */}
+              {/* System Logs - NEWEST AT TOP */}
               <div className="bg-black border border-gray-800 rounded-xl p-4 flex-1 flex flex-col min-h-[300px] lg:h-auto overflow-hidden">
                   <h3 className="text-sm font-bold text-gray-400 mb-3 flex items-center gap-2">
-                      <Terminal className="w-4 h-4" /> SYSTEM LOGS (TERMINAL)
+                      <Terminal className="w-4 h-4" /> SYSTEM LOGS (FEED)
                   </h3>
                   <div className="font-mono text-xs overflow-y-auto flex-1 custom-scrollbar space-y-1.5 p-1 max-h-[300px] lg:max-h-full">
                       {logs.map(log => (
@@ -991,7 +996,6 @@ const App = () => {
                               </span>
                           </div>
                       ))}
-                      <div ref={logEndRef} />
                   </div>
               </div>
 
