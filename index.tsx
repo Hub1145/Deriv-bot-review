@@ -120,46 +120,43 @@ const analyzeMarket = async (symbol: string, candles: Candle[], balance: number,
   ).join('\n');
 
   const prompt = `
-    Role: Elite Price Action Binary Options Trader (Strict Confidence-Based Money Management).
-    Objective: Grow account ($${balance}) by identifying high-probability setups and managing risk dynamically.
+    Role: Elite Pure Price Action Binary Options Trader (No Indicators, No Volume).
+    Objective: Grow account ($${balance}) to $10,000 using aggressive compounding on high-probability setups.
     Context: Trading ${symbol} on ${timeframeMinutes}-minute timeframe.
     
     MARKET DATA (Last 20 Candles - OHLC Only):
     ${ohlcString}
     
-    ANALYSIS METHODOLOGY (CANDLESTICK GEOMETRY):
-    1. MARKET STRUCTURE: Determine trend (HH/HL or LH/LL). Trend is your friend.
-    2. REJECTIONS: Look for long wicks indicating price rejection at key levels.
-    3. MOMENTUM: Large bodies indicate strength. Small bodies indicate weakness/indecision.
-    4. PATTERNS: Engulfing, Pinbar, Inside Bar, Morning/Evening Star.
+    ANALYSIS METHODOLOGY (CANDLESTICK GEOMETRY ONLY):
+    1. MARKET STRUCTURE: Identify Higher Highs/Higher Lows (Uptrend) or Lower Highs/Lower Lows (Downtrend).
+    2. CANDLE PSYCHOLOGY: 
+       - Long Wicks = Rejection (Price tried to go there but failed).
+       - Large Body = Strong Momentum.
+       - Small Body (Doji) = Indecision/Potential Reversal.
+    3. PATTERNS: Engulfing, Pinbar, Inside Bar, Morning/Evening Star, Railway Tracks.
+    4. KEY LEVELS: Identify support/resistance based on previous wicks/bodies.
 
     STRATEGY (BINARY OPTIONS):
-    - CALL (UP): Trend Up + Pullback to Support + Rejection Wick (Bullish Pinbar) or Engulfing.
-    - PUT (DOWN): Trend Down + Pullback to Resistance + Rejection Wick (Bearish Pinbar) or Engulfing.
-    - HOLD: Choppy market, Doji candles, no clear trend, or low confidence.
+    - TREND CONTINUATION: If strong trend + minor pullback + rejection of pullback -> TRADE WITH TREND.
+    - REVERSAL: If price hits key level + prints reversal candle (Pinbar/Engulfing) -> TRADE REVERSAL.
     
-    MONEY MANAGEMENT (CONFIDENCE-BASED DYNAMIC STAKING):
-    Calculate "stake" based on your confidence level (0-100%).
-    * CRITICAL: Do not trade if confidence is < 70%. *
-    
-    - CONFIDENCE 90-100% (SNIPER ENTRY): Risk 10-15% of Balance ($${balance}). Setup is perfect (Trend + Level + Signal).
-    - CONFIDENCE 80-89% (STRONG SETUP): Risk 5-9% of Balance. Good setup but maybe one factor is average.
-    - CONFIDENCE 75-79% (STANDARD SETUP): Risk 2-3% of Balance. Decent setup but slightly risky.
-    - CONFIDENCE < 75%: Action MUST be "HOLD". Stake = 0.
+    MONEY MANAGEMENT (Growth Plan 10 -> 10k):
+    - Account < $100: Risk 10-15% per trade (Aggressive Growth).
+    - Account > $100: Risk 5-8% per trade.
+    - Account > $1000: Risk 2-4% per trade.
     
     TASK:
     Analyze the *latest* closed candle in the context of the previous 19.
-    Determine the action (CALL, PUT, HOLD).
-    Calculate stake based on the Confidence matrix above.
+    Explain the psychology of buyers vs sellers.
     
     Output JSON ONLY:
     {
       "action": "CALL" | "PUT" | "HOLD",
-      "duration": integer (1, 2, 3 or 4). Number of candles to hold.
-      "stake": number (Exact dollar amount based on % of $${balance}),
+      "duration": integer (1, 2, or 3). THIS IS THE NUMBER OF CANDLES to hold. (e.g. 1 = 1 candle expiry. If timeframe is 5m, duration 1 = 5m expiry).
+      "stake": number (calculated based on Plan),
       "confidence": integer (0-100),
       "reasoning": "Short Strategy Name (e.g., 'Bullish Pinbar Rejection')",
-      "technical_analysis": "Detailed analysis. Explain WHY confidence is High/Low. E.g. 'Strong rejection wick at EMA confirms uptrend. Confidence 92% justifies aggressive stake.'"
+      "technical_analysis": "Detailed 'Stream of Consciousness' log: 'Latest candle closed as a Hammer at support. Wicks indicate sellers exhausted. Previous 3 candles show deceleration. Expecting push up.'"
     }
   `;
 
@@ -311,30 +308,21 @@ const App = () => {
       if (decision.action === 'HOLD') return;
 
       const rawStake = parseFloat(decision.stake.toFixed(2));
+      const safeStake = Math.max(0.35, rawStake); 
       
-      // SAFETY: Hard cap at 20% of balance to prevent AI hallucinations from wiping account
-      const currentBalance = balanceRef.current;
-      const maxAllowedStake = currentBalance * 0.20;
-      
-      let safeStake = Math.max(0.35, rawStake); 
-      if (safeStake > maxAllowedStake) {
-          safeStake = maxAllowedStake;
-          addLog('warning', `⚠️ Stake capped at safety limit ($${safeStake.toFixed(2)})`);
-      }
-
       const currentTfSeconds = timeframeRef.current;
       const currentTfMinutes = currentTfSeconds / 60;
       
       const candles = decision.duration; 
       const actualDurationMinutes = Math.round(candles * currentTfMinutes);
 
-      addLog('ai', `🤖 EXECUTING: ${decision.action} on ${decision.symbol}. Stake: $${safeStake} (Conf: ${decision.confidence}%). Duration: ${actualDurationMinutes}m`);
+      addLog('ai', `🤖 EXECUTING: ${decision.action} on ${decision.symbol}. Stake: $${safeStake}. Duration: ${actualDurationMinutes}m (${candles} candles)`);
 
       sendRequest({
           buy: 1,
           price: safeStake + 100, 
           parameters: {
-              contract_type: decision.action,
+              contract_type: decision.action === 'CALL' ? 'CALL' : 'PUT',
               symbol: decision.symbol,
               duration: actualDurationMinutes, 
               duration_unit: 'm', 
@@ -381,7 +369,7 @@ const App = () => {
         addLog('ai', `[${symbol}] 📝 Analysis: ${decision.reasoning}`); 
         
         if (decision.action !== 'HOLD') {
-            addLog('success', `>>> 🚀 SIGNAL: ${decision.action} (${decision.confidence}%) - Stake: $${decision.stake}`);
+            addLog('success', `>>> 🚀 SIGNAL: ${decision.action} (${decision.confidence}%)`);
             if (isTradingActiveRef.current) {
                 placeTrade(decision);
             }
